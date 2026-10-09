@@ -16,20 +16,20 @@ step to the dashboard in real time.
 
 ## Demo
 
-[![EdgeDeploy demo: from GitHub repository to a live URL on ECS Fargate](demo_files/Deployment%20Page%20Running.png)](demo_files/EdgeDeploy%20Demo.mp4)
+A full deployment, from a GitHub repository to a running application on AWS ECS Fargate: the live build log, the
+deployment timeline, the health check, **Open Application**, and the AWS resources it creates.
 
-▶️ **[Watch the demo video](demo_files/EdgeDeploy%20Demo.mp4)**: a full deployment, from a GitHub repository to a running
-application on AWS ECS Fargate, with the live build log, the deployment timeline and the AWS resources it creates.
+https://github.com/user-attachments/assets/9cdcccd1-274d-428d-ac1f-a0d4e85e7087
 
 ### Screenshots
 
 | | |
 |:---:|:---:|
-| <img src="demo_files/Login%20Page.png" alt="Login page" width="420"><br>**Sign in with GitHub**: OAuth, server-side sessions in Redis, the GitHub token encrypted at rest | <img src="demo_files/Initial%20Dashboard.png" alt="Initial dashboard" width="420"><br>**Dashboard**: projects and recent deployments across them |
-| <img src="demo_files/Select%20Project%20Page.png" alt="Repository picker" width="420"><br>**Pick a repository**: your GitHub repositories, with write access checked | <img src="demo_files/Project%20Creation%20Page.png" alt="Project creation" width="420"><br>**Create a project**: branch, framework (auto-detected) and optional build/start commands |
-| <img src="demo_files/Added%20Project%20View%20Page.png" alt="Project page" width="420"><br>**Project page**: status, production URL, deployment history, settings and encrypted environment variables | <img src="demo_files/Deployment%20Page%20Logs.png" alt="Live deployment logs" width="420"><br>**Live build**: step timeline and build output streamed over Server-Sent Events |
-| <img src="demo_files/Deployment%20Page%20Running.png" alt="Deployment running" width="420"><br>**Running on AWS**: Queued → Building → Pushing → Deploying → Health check → Running | <img src="demo_files/Deployment%20Page%20Deployed.png" alt="Deployed application" width="420"><br>**Open Application**: the deployed app served through the load balancer |
-| <img src="demo_files/Final%20Dashboard.png" alt="Dashboard after deploying" width="420"><br>**After deploying**: live project with its URL and deployment history | |
+| <img src="https://github.com/user-attachments/assets/61192c2d-853c-4910-8f1c-eab499026523" alt="Login page" width="420"><br>**Sign in with GitHub**: OAuth, server-side sessions in Redis, the GitHub token encrypted at rest | <img src="https://github.com/user-attachments/assets/b04c3a6b-1ddc-4585-b414-b8d0ba07ed5c" alt="Initial dashboard" width="420"><br>**Dashboard**: projects and recent deployments across them |
+| <img src="https://github.com/user-attachments/assets/82d3641f-f195-48cc-86c7-895f0e482d5c" alt="Repository picker" width="420"><br>**Pick a repository**: your GitHub repositories, with write access checked | <img src="https://github.com/user-attachments/assets/fb0848fe-3f38-4ead-8482-1b00403917fa" alt="Project creation" width="420"><br>**Create a project**: branch, framework (auto-detected) and optional build/start commands |
+| <img src="https://github.com/user-attachments/assets/c8e2dd2e-36b8-41fb-801a-c82ace363522" alt="Project page" width="420"><br>**Project page**: status, production URL, deployment history, settings and encrypted environment variables | <img src="https://github.com/user-attachments/assets/cef4db64-45dd-4c36-ad65-9f4c395f8474" alt="Live deployment logs" width="420"><br>**Live build**: step timeline and build output streamed over Server-Sent Events |
+| <img src="https://github.com/user-attachments/assets/68c6bbe0-07e3-4c01-a0c0-5ff72fe71be4" alt="Deployment running" width="420"><br>**Running on AWS**: Queued → Building → Pushing → Deploying → Health check → Running | <img src="https://github.com/user-attachments/assets/4f5f344e-3fe7-43b4-a3b1-29a6aa2b0b33" alt="Deployed application" width="420"><br>**Open Application**: the deployed app served through the load balancer |
+| <img src="https://github.com/user-attachments/assets/559feb2c-851e-4d40-9f27-93b92ffa30f7" alt="Dashboard after deploying" width="420"><br>**After deploying**: live project with its URL and deployment history | |
 
 ## Highlights
 
