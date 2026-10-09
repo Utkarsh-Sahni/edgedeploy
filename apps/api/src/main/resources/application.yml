@@ -1,0 +1,128 @@
+server:
+  port: ${PORT:8080}
+  shutdown: graceful
+  # Needed behind a TLS-terminating load balancer so OAuth redirect URIs are built with https.
+  forward-headers-strategy: framework
+  servlet:
+    session:
+      timeout: 8h
+      cookie:
+        name: EDGEDEPLOY_SESSION
+        http-only: true
+        same-site: lax
+        secure: ${COOKIE_SECURE:false}
+
+spring:
+  application:
+    name: edgedeploy-api
+  profiles:
+    default: local
+  threads:
+    virtual:
+      enabled: true
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/edgedeploy}
+    username: ${POSTGRES_USER:edgedeploy}
+    password: ${POSTGRES_PASSWORD:edgedeploy}
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:10}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+  flyway:
+    enabled: true
+  session:
+    redis:
+      namespace: edgedeploy:session
+  security:
+    oauth2:
+      client:
+        registration:
+          github:
+            client-id: ${GITHUB_CLIENT_ID}
+            client-secret: ${GITHUB_CLIENT_SECRET}
+            redirect-uri: ${GITHUB_REDIRECT_URI:{baseUrl}/login/oauth2/code/{registrationId}}
+            # repo: read private repositories (and clone them in a later phase). user:email: primary email.
+            scope: read:user,user:email,repo
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9094}
+    producer:
+      # The outbox stores already-serialised JSON, so the producer only ships strings.
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+      properties:
+        enable.idempotence: true
+        delivery.timeout.ms: 30000
+        request.timeout.ms: 10000
+        max.block.ms: 10000
+    consumer:
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JsonDeserializer
+        spring.json.trusted.packages: com.edgedeploy.contracts.event
+        spring.json.value.default.type: com.edgedeploy.contracts.event.DeploymentStatusEvent
+        spring.json.use.type.headers: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+
+logging:
+  pattern:
+    correlation: "[%X{requestId:-}%X{deploymentId:-}] "
+  level:
+    com.edgedeploy: INFO
+    org.apache.kafka: WARN
+
+edgedeploy:
+  web-origins: ${WEB_ORIGIN:http://localhost:3000}
+  web-url: ${WEB_URL:http://localhost:3000}
+  cookie:
+    domain: ${COOKIE_DOMAIN:}
+    secure: ${COOKIE_SECURE:false}
+  encryption:
+    # base64 32-byte AES key: openssl rand -base64 32. Required; the local profile supplies a dev-only key.
+    key: ${ENCRYPTION_KEY}
+  github:
+    api-base-url: ${GITHUB_API_URL:https://api.github.com}
+    connect-timeout: PT5S
+    read-timeout: PT15S
+  kafka:
+    partitions: ${KAFKA_PARTITIONS:3}
+    replicas: ${KAFKA_REPLICAS:1}
+    # Each api instance must see every status event to fan it out to its own SSE clients,
+    # so every instance gets its own consumer group.
+    status-consumer-group: edgedeploy-api-sse-${random.uuid}
+  outbox:
+    poll-interval: PT0.5S
+    batch-size: 50
+    send-timeout: PT10S
+  sse:
+    timeout: PT30M
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+  api-docs:
+    path: /v3/api-docs

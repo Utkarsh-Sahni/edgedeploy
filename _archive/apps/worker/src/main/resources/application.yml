@@ -1,0 +1,69 @@
+spring:
+  application:
+    name: edgedeploy-worker
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/edgedeploy}
+    username: ${POSTGRES_USER:edgedeploy}
+    password: ${POSTGRES_PASSWORD:edgedeploy}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: false
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9094}
+    consumer:
+      group-id: edgedeploy-worker
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: com.edgedeploy.kafka
+        spring.json.value.default.type: com.edgedeploy.kafka.DeploymentRequestedEvent
+        spring.json.use.type.headers: false
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        spring.json.add.type.headers: false
+    listener:
+      ack-mode: record
+
+edgedeploy:
+  encryption:
+    key: ${ENCRYPTION_KEY:MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDA=}
+  kafka:
+    topics:
+      requested: deployment.requested
+      status: deployment.status
+      failed: deployment.failed
+  workspace: ${WORKER_WORKSPACE:/tmp/edgedeploy-workspace}
+  docker-network: ${DOCKER_NETWORK:edgedeploy}
+  github:
+    token: ${GITHUB_WORKER_TOKEN:}
+  aws:
+    enabled: ${AWS_ENABLED:false}
+    region: ${AWS_REGION:us-east-1}
+    account-id: ${AWS_ACCOUNT_ID:}
+    cluster: ${ECS_CLUSTER:edgedeploy}
+    subnets: ${ECS_SUBNETS:}
+    security-groups: ${ECS_SECURITY_GROUPS:}
+    execution-role-arn: ${ECS_EXECUTION_ROLE_ARN:}
+    task-role-arn: ${ECS_TASK_ROLE_ARN:}
+    log-bucket: ${S3_LOG_BUCKET:edgedeploy-logs}
+    cpu: 256
+    memory: 512
+    container-port: 3000
+  deployment:
+    base-domain: ${DEPLOYMENT_BASE_DOMAIN:localhost}
+    scheme: ${DEPLOYMENT_SCHEME:http}
+
+logging:
+  level:
+    com.edgedeploy: INFO

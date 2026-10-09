@@ -1,0 +1,386 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  EdgeDeploy foundation (Phase 4): VPC with two public subnets (no NAT gateway), an internet-facing ALB
+  without listeners, security groups, an ECS cluster, the task execution/task roles and a least-privilege
+  managed policy for the EdgeDeploy worker. Per-project resources (ECR repositories, ECS services, target
+  groups, listeners, log groups, SSM parameters) are created by the worker at deploy time.
+  COST: in RoutingMode=alb the ALB is billed hourly (~USD 16+/month) even with no traffic. RoutingMode=public-ip
+  (budget mode) creates no load balancer: the stack itself then costs nothing while no project runs. Delete the
+  stack when you are done (see docs/aws-setup.md, "Cleanup").
+
+Parameters:
+  RoutingMode:
+    Type: String
+    Default: alb
+    AllowedValues: [alb, public-ip]
+    Description: >-
+      alb: shared Application Load Balancer, stable URL per project (~USD 16+/month fixed). public-ip: budget mode,
+      no load balancer; apps are reached on their task's public IP (must match AWS_ROUTING_MODE).
+  AppPort:
+    Type: Number
+    Default: 3000
+    Description: Budget mode only. Port Node.js/Next.js apps listen on (AWS_ECS_CONTAINER_PORT); static sites use 8080.
+  Name:
+    Type: String
+    Default: edgedeploy
+    AllowedPattern: "^[a-z][a-z0-9-]{1,20}$"
+    Description: Prefix for resource names.
+  VpcCidr:
+    Type: String
+    Default: 10.40.0.0/16
+  PublicSubnetACidr:
+    Type: String
+    Default: 10.40.0.0/24
+  PublicSubnetBCidr:
+    Type: String
+    Default: 10.40.1.0/24
+  ListenerPortStart:
+    Type: Number
+    Default: 10000
+    Description: First ALB port handed out to projects (must match AWS_ALB_LISTENER_PORT_START).
+  ListenerPortEnd:
+    Type: Number
+    Default: 10049
+    Description: Last ALB port handed out to projects (must match AWS_ALB_LISTENER_PORT_END). At most 50 ports.
+  AllowedIngressCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: Who can reach deployed apps through the ALB. Narrow this to your own IP (x.x.x.x/32) for a private demo.
+  EcrRepositoryPrefix:
+    Type: String
+    Default: edgedeploy
+    Description: Must match AWS_ECR_REPOSITORY_PREFIX.
+  LogGroupPrefix:
+    Type: String
+    Default: /edgedeploy
+    Description: Must match AWS_LOG_GROUP.
+  WorkerPrincipalArn:
+    Type: String
+    Default: ""
+    Description: >-
+      Optional. ARN of an IAM user or role allowed to assume the EdgeDeploy worker role (for example your own
+      IAM Identity Center role). Leave empty to only create the managed policy and attach it yourself.
+
+Conditions:
+  CreateWorkerRole: !Not [!Equals [!Ref WorkerPrincipalArn, ""]]
+  UseAlb: !Equals [!Ref RoutingMode, alb]
+
+Resources:
+  # --- Network: public subnets only. Tasks get public IPs to pull from ECR, so no NAT gateway (~USD 32+/month) is needed.
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{ Key: Name, Value: !Ref Name }, { Key: "edgedeploy:managed", Value: "true" }]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags: [{ Key: Name, Value: !Ref Name }]
+
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PublicSubnetACidr
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      Tags: [{ Key: Name, Value: !Sub "${Name}-public-a" }]
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PublicSubnetBCidr
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      Tags: [{ Key: Name, Value: !Sub "${Name}-public-b" }]
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: !Sub "${Name}-public" }]
+
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetARoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetBRoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+  # --- Security groups: internet -> ALB (project ports only) -> tasks (from the ALB only).
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: UseAlb
+    Properties:
+      GroupDescription: EdgeDeploy ALB - project listener ports
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref ListenerPortStart
+          ToPort: !Ref ListenerPortEnd
+          CidrIp: !Ref AllowedIngressCidr
+      Tags: [{ Key: Name, Value: !Sub "${Name}-alb" }]
+
+  # ALB mode: tasks are reachable from the ALB only. Budget mode: the app ports are reachable from AllowedIngressCidr.
+  TaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !If [UseAlb, "EdgeDeploy Fargate tasks - reachable from the ALB only", "EdgeDeploy Fargate tasks - app ports only"]
+      VpcId: !Ref Vpc
+      SecurityGroupIngress: !If
+        - UseAlb
+        - - IpProtocol: tcp
+            FromPort: 1
+            ToPort: 65535
+            SourceSecurityGroupId: !Ref AlbSecurityGroup
+        - - IpProtocol: tcp
+            FromPort: !Ref AppPort
+            ToPort: !Ref AppPort
+            CidrIp: !Ref AllowedIngressCidr
+          - IpProtocol: tcp
+            FromPort: 8080
+            ToPort: 8080
+            CidrIp: !Ref AllowedIngressCidr
+      Tags: [{ Key: Name, Value: !Sub "${Name}-tasks" }]
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Condition: UseAlb
+    Properties:
+      Name: !Sub "${Name}-alb"
+      Type: application
+      Scheme: internet-facing
+      Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB]
+      SecurityGroups: [!Ref AlbSecurityGroup]
+      LoadBalancerAttributes:
+        - { Key: idle_timeout.timeout_seconds, Value: "60" }
+        - { Key: routing.http.drop_invalid_header_fields.enabled, Value: "true" }
+      Tags: [{ Key: "edgedeploy:managed", Value: "true" }]
+
+  # --- ECS. Container Insights stays off: it is billed per metric. FARGATE_SPOT is available for AWS_ECS_CAPACITY=fargate-spot.
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Ref Name
+      CapacityProviders: [FARGATE, FARGATE_SPOT]
+      ClusterSettings: [{ Name: containerInsights, Value: disabled }]
+      Tags: [{ Key: "edgedeploy:managed", Value: "true" }]
+
+  # Used by ECS itself to pull the image, write logs and read the project's SSM SecureString parameters.
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Name}-task-execution"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              ArnLike: { "aws:SourceArn": !Sub "arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:*" }
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+      Policies:
+        - PolicyName: read-project-environment
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ssm:GetParameters
+                Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/edgedeploy/*"
+
+  # Identity of the deployed application. Intentionally has no permissions: user apps are untrusted.
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Name}-task"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              ArnLike: { "aws:SourceArn": !Sub "arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:*" }
+
+  # Exactly what the worker calls (see apps/worker/.../aws). No AdministratorAccess, no wildcards on write actions.
+  WorkerPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${Name}-worker"
+      Description: EdgeDeploy worker - push images to ECR and deploy them to ECS Fargate behind the ALB
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EcrLogin
+            Effect: Allow
+            Action: ecr:GetAuthorizationToken
+            Resource: "*"
+          - Sid: EcrProjectRepositories
+            Effect: Allow
+            Action:
+              - ecr:CreateRepository
+              - ecr:DescribeRepositories
+              - ecr:PutLifecyclePolicy
+              - ecr:TagResource
+              - ecr:DescribeImages
+              - ecr:BatchCheckLayerAvailability
+              - ecr:BatchGetImage
+              - ecr:InitiateLayerUpload
+              - ecr:UploadLayerPart
+              - ecr:CompleteLayerUpload
+              - ecr:PutImage
+            Resource: !Sub "arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/${EcrRepositoryPrefix}/*"
+          - Sid: EcsTaskDefinitions
+            Effect: Allow
+            Action: ecs:RegisterTaskDefinition
+            Resource: "*"
+          - Sid: EcsProjectServices
+            Effect: Allow
+            Action:
+              - ecs:CreateService
+              - ecs:UpdateService
+              - ecs:DescribeServices
+            Resource: !Sub "arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:service/${Name}/edgedeploy-*"
+          - Sid: EcsTasksInCluster
+            Effect: Allow
+            Action:
+              - ecs:ListTasks
+              - ecs:DescribeTasks
+            Resource: "*"
+            Condition:
+              ArnEquals: { "ecs:cluster": !GetAtt Cluster.Arn }
+          - Sid: EcsTagOnCreate
+            Effect: Allow
+            Action: ecs:TagResource
+            Resource: "*"
+            Condition:
+              StringEquals: { "ecs:CreateAction": [CreateService, RegisterTaskDefinition] }
+          - Sid: PassOnlyEdgeDeployTaskRoles
+            Effect: Allow
+            Action: iam:PassRole
+            Resource: [!GetAtt TaskExecutionRole.Arn, !GetAtt TaskRole.Arn]
+            Condition:
+              StringEquals: { "iam:PassedToService": ecs-tasks.amazonaws.com }
+          - Sid: LoadBalancingRead
+            Effect: Allow
+            Action:
+              - elasticloadbalancing:DescribeLoadBalancers
+              - elasticloadbalancing:DescribeListeners
+              - elasticloadbalancing:DescribeTargetGroups
+              - elasticloadbalancing:DescribeTargetHealth
+              - elasticloadbalancing:DescribeTags
+            Resource: "*"
+          - !If
+            - UseAlb
+            - Sid: ProjectTargetGroups
+              Effect: Allow
+              Action:
+                - elasticloadbalancing:CreateTargetGroup
+                - elasticloadbalancing:ModifyTargetGroupAttributes
+                - elasticloadbalancing:AddTags
+              Resource: !Sub "arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:targetgroup/ed-*/*"
+            - !Ref AWS::NoValue
+          - !If
+            - UseAlb
+            - Sid: ProjectListenersOnTheEdgeDeployAlbOnly
+              Effect: Allow
+              Action: elasticloadbalancing:CreateListener
+              Resource: !Ref LoadBalancer
+            - !Ref AWS::NoValue
+          - !If
+            - UseAlb
+            - Sid: TagListeners
+              Effect: Allow
+              Action: elasticloadbalancing:AddTags
+              Resource: !Sub "arn:${AWS::Partition}:elasticloadbalancing:${AWS::Region}:${AWS::AccountId}:listener/${LoadBalancer.LoadBalancerFullName}/*"
+            - !Ref AWS::NoValue
+          - Sid: FindTaskPublicIpBudgetMode
+            Effect: Allow
+            Action: ec2:DescribeNetworkInterfaces
+            Resource: "*"
+          - Sid: ProjectLogGroups
+            Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:PutRetentionPolicy
+              - logs:TagResource
+              - logs:TagLogGroup
+            Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${LogGroupPrefix}/*"
+          - Sid: ProjectEnvironmentParameters
+            Effect: Allow
+            Action:
+              - ssm:PutParameter
+              - ssm:DeleteParameters
+              - ssm:GetParametersByPath
+            Resource:
+              - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/edgedeploy/*"
+
+  WorkerRole:
+    Type: AWS::IAM::Role
+    Condition: CreateWorkerRole
+    Properties:
+      RoleName: !Sub "${Name}-worker"
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { AWS: !Ref WorkerPrincipalArn }
+            Action: sts:AssumeRole
+      ManagedPolicyArns: [!Ref WorkerPolicy]
+
+Outputs:
+  AwsRegion:
+    Value: !Ref AWS::Region
+  AwsAccountId:
+    Value: !Ref AWS::AccountId
+  AwsEcsCluster:
+    Value: !Ref Cluster
+  AwsEcsExecutionRoleArn:
+    Value: !GetAtt TaskExecutionRole.Arn
+  AwsEcsTaskRoleArn:
+    Value: !GetAtt TaskRole.Arn
+  AwsEcsSubnetIds:
+    Value: !Join [",", [!Ref PublicSubnetA, !Ref PublicSubnetB]]
+  AwsEcsSecurityGroupId:
+    Value: !Ref TaskSecurityGroup
+  AwsRoutingMode:
+    Value: !Ref RoutingMode
+  AwsAlbArn:
+    Condition: UseAlb
+    Value: !Ref LoadBalancer
+  AwsAlbDnsName:
+    Condition: UseAlb
+    Value: !GetAtt LoadBalancer.DNSName
+  AwsVpcId:
+    Value: !Ref Vpc
+  WorkerPolicyArn:
+    Value: !Ref WorkerPolicy
+  WorkerRoleArn:
+    Condition: CreateWorkerRole
+    Value: !GetAtt WorkerRole.Arn

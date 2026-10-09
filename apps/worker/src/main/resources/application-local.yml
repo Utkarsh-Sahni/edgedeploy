@@ -1,0 +1,8 @@
+logging:
+  level:
+    com.edgedeploy: DEBUG
+
+edgedeploy:
+  encryption:
+    # DEV ONLY, same as the api's local key, so locally created environment variables decrypt.
+    key: ${ENCRYPTION_KEY:ZGV2LW9ubHkta2V5LWRvLW5vdC11c2UtaW4tcHJvZCE=}

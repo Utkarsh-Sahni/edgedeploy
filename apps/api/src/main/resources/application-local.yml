@@ -1,0 +1,14 @@
+# Local development profile (active by default). Human-readable logs, dev-only secrets.
+logging:
+  level:
+    com.edgedeploy: DEBUG
+
+management:
+  endpoint:
+    health:
+      show-details: always
+
+edgedeploy:
+  encryption:
+    # DEV ONLY: never use this key outside your machine. Production must set ENCRYPTION_KEY.
+    key: ${ENCRYPTION_KEY:ZGV2LW9ubHkta2V5LWRvLW5vdC11c2UtaW4tcHJvZCE=}

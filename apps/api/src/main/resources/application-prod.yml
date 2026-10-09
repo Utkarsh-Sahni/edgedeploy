@@ -1,0 +1,32 @@
+# Production profile: JSON (ECS) logs, secure cookies, credentials only from the environment.
+server:
+  servlet:
+    session:
+      cookie:
+        secure: true
+
+spring:
+  datasource:
+    url: ${DATABASE_URL}
+    username: ${POSTGRES_USER}
+    password: ${POSTGRES_PASSWORD}
+
+management:
+  endpoint:
+    health:
+      show-details: never
+
+logging:
+  structured:
+    format:
+      console: ecs
+
+edgedeploy:
+  cookie:
+    secure: true
+
+springdoc:
+  api-docs:
+    enabled: ${API_DOCS_ENABLED:false}
+  swagger-ui:
+    enabled: ${API_DOCS_ENABLED:false}

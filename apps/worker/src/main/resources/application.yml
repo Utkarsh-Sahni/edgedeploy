@@ -1,0 +1,165 @@
+# The worker has no public API. The embedded server only serves actuator endpoints.
+server:
+  port: ${PORT:8081}
+  shutdown: graceful
+
+spring:
+  application:
+    name: edgedeploy-worker
+  profiles:
+    default: local
+  lifecycle:
+    # Give an in-flight pipeline stage time to finish before the consumer is torn down.
+    timeout-per-shutdown-phase: 60s
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/edgedeploy}
+    username: ${POSTGRES_USER:edgedeploy}
+    password: ${POSTGRES_PASSWORD:edgedeploy}
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:5}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9094}
+    consumer:
+      group-id: edgedeploy-worker
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      # Deployments are long-running: take one record at a time and allow a poll interval longer than
+      # the deployment timeout, so a slow build never triggers a consumer-group rebalance
+      # (checked at startup by WorkerStartupChecks).
+      max-poll-records: 1
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        max.poll.interval.ms: ${WORKER_MAX_POLL_INTERVAL_MS:2100000}
+        spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JsonDeserializer
+        spring.json.trusted.packages: com.edgedeploy.contracts.event
+        spring.json.value.default.type: com.edgedeploy.contracts.event.DeploymentRequestedEvent
+        spring.json.use.type.headers: false
+    producer:
+      acks: all
+      properties:
+        enable.idempotence: true
+        # Status events are best-effort: never block a pipeline thread for long on a broker outage.
+        max.block.ms: 5000
+    listener:
+      # Commit the offset as soon as each deployment record has been handled.
+      ack-mode: record
+      # Max deployments built at once by this worker instance (one consumer thread each). Every Docker
+      # build can saturate several CPU cores and gigabytes of RAM (npm install, bundlers), so an
+      # unbounded number of parallel builds would starve the host. Partitions cap it as well (3 by default).
+      concurrency: ${DEPLOYMENT_WORKER_CONCURRENCY:2}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
+
+logging:
+  pattern:
+    correlation: "[%X{deploymentId:-}] "
+  level:
+    com.edgedeploy: INFO
+    org.apache.kafka: WARN
+
+edgedeploy:
+  # build (default): clone, detect, generate Dockerfile, docker build -> IMAGE_BUILT.
+  # acknowledge: only verify + record receipt of each request (no git/docker needed).
+  mode: ${WORKER_MODE:build}
+  kafka:
+    partitions: ${KAFKA_PARTITIONS:3}
+    replicas: ${KAFKA_REPLICAS:1}
+    retry:
+      max-retries: 4
+      initial-interval: PT1S
+      multiplier: 2.0
+      max-interval: PT10S
+  timeouts:
+    # Whole deployment: build + push + ECS rollout + health check.
+    deployment: ${DEPLOYMENT_TIMEOUT_SECONDS:1800}s
+    docker-build: ${DOCKER_BUILD_TIMEOUT_SECONDS:600}s
+    git-operation: ${GIT_OPERATION_TIMEOUT_SECONDS:120}s
+    image-push: ${IMAGE_PUSH_TIMEOUT_SECONDS:600}s
+    rollout: ${DEPLOY_ROLLOUT_TIMEOUT_SECONDS:600}s
+    health-check: ${HEALTH_CHECK_TIMEOUT_SECONDS:180}s
+  workspace:
+    # Each deployment gets {base-dir}/{deploymentId}, deleted afterwards.
+    base-dir: ${EDGEDEPLOY_WORKSPACE_DIR:${java.io.tmpdir}/edgedeploy}
+  git:
+    executable: ${GIT_EXECUTABLE:git}
+    base-url: ${GIT_BASE_URL:https://github.com}
+    # Read access to private repositories. Never logged, never sent through Kafka.
+    deploy-token: ${GITHUB_DEPLOY_TOKEN:}
+    allow-file-protocol: false
+  docker:
+    executable: ${DOCKER_EXECUTABLE:docker}
+    image-repository: ${DOCKER_IMAGE_REPOSITORY:edgedeploy}
+    node-image: ${BUILD_NODE_IMAGE:node:22-alpine}
+    static-runtime-image: ${BUILD_STATIC_RUNTIME_IMAGE:nginxinc/nginx-unprivileged:1.27-alpine}
+    # Port Node.js/Next.js containers listen on (PORT env var); static sites are served by nginx on 8080.
+    app-port: ${AWS_ECS_CONTAINER_PORT:3000}
+    # e.g. linux/amd64 to build x86 images on an ARM machine. Blank = native; ECS runs the matching architecture.
+    platform: ${DOCKER_BUILD_PLATFORM:}
+  logs:
+    max-output-lines: ${BUILD_LOG_MAX_LINES:2000}
+    flush-lines: 50
+    flush-interval: PT1S
+  encryption:
+    # Same key as the api: decrypts project environment variables just before deploying.
+    key: ${ENCRYPTION_KEY:}
+  aws:
+    # false (default): Phase 3 behaviour, images stay local and deployments end at IMAGE_BUILT.
+    enabled: ${EDGEDEPLOY_AWS_ENABLED:false}
+    region: ${AWS_REGION:}
+    # Must match the credentials' account (checked at startup) so nothing is deployed to the wrong account.
+    account-id: ${AWS_ACCOUNT_ID:}
+    # alb (default): shared load balancer, stable URL per project. public-ip: budget mode without a load
+    # balancer; the URL is the task's public IP and changes on every deployment (see docs/aws-setup.md).
+    routing: ${AWS_ROUTING_MODE:alb}
+    ecr:
+      repository-prefix: ${AWS_ECR_REPOSITORY_PREFIX:edgedeploy}
+      keep-images: ${AWS_ECR_KEEP_IMAGES:10}
+      push-attempts: 3
+    ecs:
+      cluster: ${AWS_ECS_CLUSTER:}
+      execution-role-arn: ${AWS_ECS_EXECUTION_ROLE_ARN:}
+      task-role-arn: ${AWS_ECS_TASK_ROLE_ARN:}
+      subnet-ids: ${AWS_ECS_SUBNET_IDS:}
+      security-group-id: ${AWS_ECS_SECURITY_GROUP_ID:}
+      # true for public subnets without a NAT gateway (tasks pull from ECR over their public IP, while the
+      # task security group still only admits the ALB). false for private subnets with NAT/VPC endpoints.
+      assign-public-ip: ${AWS_ECS_ASSIGN_PUBLIC_IP:true}
+      cpu: ${AWS_ECS_CPU:256}
+      memory: ${AWS_ECS_MEMORY:512}
+      desired-count: ${AWS_ECS_DESIRED_COUNT:1}
+      container-name: edgedeploy-app
+      container-health-check: true
+      # ssm: environment variables become SSM SecureString parameters referenced by the task definition.
+      # environment: plaintext in the task definition (simpler, but readable by anyone with ecs:Describe*).
+      secrets-mode: ${AWS_ECS_SECRETS_MODE:ssm}
+      poll-interval: 10s
+      health-check-grace-period: 60s
+      max-failed-tasks: 2
+      # fargate (on-demand) or fargate-spot (much cheaper, can be interrupted; ARM64 images fall back to fargate).
+      capacity: ${AWS_ECS_CAPACITY:fargate}
+    alb:
+      load-balancer-arn: ${AWS_ALB_ARN:}
+      vpc-id: ${AWS_VPC_ID:}
+      # Each project gets one listener port in this range (http://<alb-dns>:<port>/). Max 50 per ALB.
+      listener-port-start: ${AWS_ALB_LISTENER_PORT_START:10000}
+      listener-port-end: ${AWS_ALB_LISTENER_PORT_END:10049}
+      deregistration-delay: 30s
+    cloudwatch:
+      log-group-prefix: ${AWS_LOG_GROUP:/edgedeploy}
+      retention-days: ${AWS_LOG_RETENTION_DAYS:7}
+    health-check:
+      path: ${APP_HEALTH_CHECK_PATH:/}
+      request-timeout: 5s
+    retry:
+      # SDK standard retry mode: exponential backoff + jitter for throttling, 5xx and network errors only.
+      max-attempts: ${AWS_MAX_ATTEMPTS:5}

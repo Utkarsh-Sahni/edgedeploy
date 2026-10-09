@@ -1,0 +1,15 @@
+# Test profile: dummy OAuth client and a throwaway encryption key. Nothing here is a real secret.
+spring:
+  security:
+    oauth2:
+      client:
+        registration:
+          github:
+            client-id: test-client-id
+            client-secret: test-client-secret
+
+edgedeploy:
+  encryption:
+    key: dGVzdC1vbmx5LWtleS0zMi1ieXRlcy1sb25nLWtleSE=
+  outbox:
+    poll-interval: PT0.1S
